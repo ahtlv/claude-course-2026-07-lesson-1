@@ -1,0 +1,53 @@
+name: Auto-privatize after course window
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      test_cycle:
+        description: "Тест: флип public -> private в рамках одного запуска, ничего не трогая по факту"
+        type: boolean
+        default: false
+
+permissions:
+  administration: write
+
+env:
+  REPO: ${{ github.repository }}
+  MAX_AGE_DAYS: 35
+
+jobs:
+  check-and-privatize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test permission cycle (public -> private), no real effect
+        if: ${{ github.event.inputs.test_cycle == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Текущая visibility:"
+          gh api repos/$REPO --jq .visibility
+          echo "Пробуем PATCH visibility=public..."
+          gh api repos/$REPO -X PATCH -f visibility=public --jq .visibility
+          echo "Пробуем PATCH visibility=private (возврат)..."
+          gh api repos/$REPO -X PATCH -f visibility=private --jq .visibility
+          echo "Тест успешен: GITHUB_TOKEN может менять visibility."
+
+      - name: Scheduled check — flip to private if window expired
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CREATED=$(gh api repos/$REPO --jq .created_at)
+          CREATED_EPOCH=$(date -d "$CREATED" +%s)
+          NOW_EPOCH=$(date +%s)
+          DAYS=$(( (NOW_EPOCH - CREATED_EPOCH) / 86400 ))
+          VISIBILITY=$(gh api repos/$REPO --jq .visibility)
+          echo "Репо создано $DAYS дней назад, текущая visibility: $VISIBILITY"
+          if [ "$DAYS" -ge "$MAX_AGE_DAYS" ] && [ "$VISIBILITY" = "public" ]; then
+            echo "Порог $MAX_AGE_DAYS дней пройден — флип в private"
+            gh api repos/$REPO -X PATCH -f visibility=private --jq .visibility
+          else
+            echo "Порог не пройден или уже private — ничего не делаю"
+          fi
